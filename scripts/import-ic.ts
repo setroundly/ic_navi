@@ -42,7 +42,7 @@ function toDisplayName(name: string, icType: IcRecord["icType"]): string {
 }
 
 function shouldSkip(name: string): boolean {
-  return /予定地|未開通|仮称/.test(name);
+  return /予定地|未開通|仮称|ダミー/.test(name);
 }
 
 async function fetchBbox(bbox: (typeof BBOXES)[0]): Promise<OsmElement[]> {

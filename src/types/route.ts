@@ -38,4 +38,5 @@ export type RouteSearchResult = {
   durationMin: number;
   highwayDistanceKm: number | null;
   localDistanceKm: number | null;
+  estimationNote?: string;
 };

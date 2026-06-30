@@ -51,6 +51,7 @@ export default function HomePage() {
           </p>
           <p className="mt-1 text-xs text-slate-400">
             場所検索: OpenStreetMap / 住所・駅: 国土地理院・HeartRails / ルート: OSRM
+            / 結果は推定値です
           </p>
         </header>
 
@@ -101,6 +102,12 @@ export default function HomePage() {
 
         {result && (
           <section className="mt-6 space-y-4">
+            {result.estimationNote && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {result.estimationNote}
+              </div>
+            )}
+
             <div className="grid gap-3 sm:grid-cols-3">
               <SummaryCard label="総距離" value={`${result.distanceKm} km`} />
               <SummaryCard
