@@ -1,9 +1,10 @@
 import { geocodeAddress } from "../src/lib/geocode";
-import { findIcCandidatesForTransition } from "../src/lib/ic-matcher";
+import { findEntryExitIcsByRouteSampling } from "../src/lib/ic-matcher";
 import {
+  bearingDeg,
   fetchDrivingRoute,
   findHighwayTransitions,
-  sliceGeometryNearPoint,
+  sampleRouteEvery,
 } from "../src/lib/route";
 
 async function debugRoute(origin: string, destination: string) {
@@ -14,28 +15,21 @@ async function debugRoute(origin: string, destination: string) {
 
   const route = await fetchDrivingRoute(o, d);
   const { entry, exit } = findHighwayTransitions(route.steps);
+  const samples = sampleRouteEvery(route.geometry, route.steps, 500);
+  const sampled = findEntryExitIcsByRouteSampling(samples, bearingDeg(o, d));
 
-  console.log("\n[entry]", entry);
-  console.log("[exit]", exit);
-
-  if (entry) {
-    const geometry = sliceGeometryNearPoint(route.geometry, entry.location, 4000);
-    console.log(
-      "entry IC:",
-      findIcCandidatesForTransition(entry, geometry)
-        .map((c) => c.nameDisplay)
-        .join(", "),
-    );
-  }
-  if (exit) {
-    const geometry = sliceGeometryNearPoint(route.geometry, exit.location, 4000);
-    console.log(
-      "exit IC:",
-      findIcCandidatesForTransition(exit, geometry)
-        .map((c) => c.nameDisplay)
-        .join(", "),
-    );
-  }
+  console.log("\n[legacy transition entry]", entry);
+  console.log("[legacy transition exit]", exit);
+  console.log(`[samples] ${samples.length} points every 500m`);
+  console.log(`[crossings] ${sampled.crossings.length} IC(s)`);
+  console.log(
+    "entry IC:",
+    sampled.entryCandidates.map((c) => c.nameDisplay).join(", "),
+  );
+  console.log(
+    "exit IC:",
+    sampled.exitCandidates.map((c) => c.nameDisplay).join(", "),
+  );
 }
 
 async function main() {

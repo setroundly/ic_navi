@@ -2,9 +2,12 @@ import fs from "fs";
 import path from "path";
 
 import {
+  angleDiffDeg,
+  bearingDeg,
   haversineM,
   minDistanceToPolylineM,
   type HighwayTransition,
+  type RouteSample,
 } from "@/lib/route";
 import type { IcCandidate, IcRecord, LatLng } from "@/types/route";
 
@@ -63,6 +66,134 @@ function scoreIcType(icType: IcRecord["icType"]): number {
     default:
       return 4;
   }
+}
+
+const SAMPLE_CROSSING_THRESHOLD_M = 500;
+const PREFERRED_IC_TYPES: Array<IcRecord["icType"]> = ["IC", "JCT", "SIC"];
+
+type IcCrossing = {
+  ic: IcRecord;
+  sampleIndex: number;
+  distanceM: number;
+  cumulativeDistanceM: number;
+};
+
+function isDirectionConsistent(
+  sample: RouteSample,
+  ic: IcRecord,
+  travelBearing: number,
+): boolean {
+  const routeVsTravel = angleDiffDeg(sample.bearing, travelBearing);
+  if (routeVsTravel > 90) {
+    return false;
+  }
+
+  const toIcBearing = bearingDeg(sample.point, ic);
+  const sideAngle = angleDiffDeg(sample.bearing, toIcBearing);
+
+  if (sideAngle < 45 || sideAngle > 135) {
+    return false;
+  }
+
+  if (sample.isHighway) {
+    return routeVsTravel <= 60;
+  }
+
+  return true;
+}
+
+function toIcCandidate(crossing: IcCrossing): IcCandidate {
+  return {
+    id: crossing.ic.id,
+    name: crossing.ic.name,
+    nameDisplay: crossing.ic.nameDisplay,
+    icType: crossing.ic.icType,
+    distanceM: Math.round(crossing.distanceM),
+  };
+}
+
+function uniqueCandidates(crossings: IcCrossing[]): IcCandidate[] {
+  const seen = new Set<string>();
+  const candidates: IcCandidate[] = [];
+
+  for (const crossing of crossings) {
+    const key = normalizeIcName(crossing.ic.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push(toIcCandidate(crossing));
+    if (candidates.length >= 5) break;
+  }
+
+  return candidates;
+}
+
+export function findEntryExitIcsByRouteSampling(
+  samples: RouteSample[],
+  travelBearing: number,
+): {
+  entry: IcCandidate | null;
+  exit: IcCandidate | null;
+  entryCandidates: IcCandidate[];
+  exitCandidates: IcCandidate[];
+  crossings: IcCrossing[];
+} {
+  const master = loadIcMaster().filter((ic) =>
+    PREFERRED_IC_TYPES.includes(ic.icType),
+  );
+
+  const crossings: IcCrossing[] = [];
+  let lastIcId: string | null = null;
+
+  for (let i = 0; i < samples.length; i++) {
+    const sample = samples[i];
+    let nearest: IcCrossing | null = null;
+
+    for (const ic of master) {
+      const distanceM = haversineM(sample.point, ic);
+      if (distanceM > SAMPLE_CROSSING_THRESHOLD_M) continue;
+      if (!isDirectionConsistent(sample, ic, travelBearing)) continue;
+
+      if (!nearest || distanceM < nearest.distanceM) {
+        nearest = {
+          ic,
+          sampleIndex: i,
+          distanceM,
+          cumulativeDistanceM: sample.cumulativeDistanceM,
+        };
+      }
+    }
+
+    if (!nearest) {
+      lastIcId = null;
+      continue;
+    }
+
+    if (nearest.ic.id === lastIcId) continue;
+
+    lastIcId = nearest.ic.id;
+    crossings.push(nearest);
+  }
+
+  if (crossings.length === 0) {
+    return {
+      entry: null,
+      exit: null,
+      entryCandidates: [],
+      exitCandidates: [],
+      crossings: [],
+    };
+  }
+
+  const entryCrossing = crossings[0];
+  const exitCrossing = crossings[crossings.length - 1];
+
+  return {
+    entry: toIcCandidate(entryCrossing),
+    exit: toIcCandidate(exitCrossing),
+    entryCandidates: uniqueCandidates(crossings),
+    exitCandidates: uniqueCandidates([...crossings].reverse()),
+    crossings,
+  };
 }
 
 export function normalizeIcName(name: string): string {
@@ -309,26 +440,6 @@ export function findIcCandidatesForPoint(
     highwayHint,
     preferTypes: ["IC", "JCT", "SIC", "SA_PA"],
   });
-}
-
-function bearingDeg(from: LatLng, to: LatLng): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const toDeg = (rad: number) => (rad * 180) / Math.PI;
-  const lat1 = toRad(from.lat);
-  const lat2 = toRad(to.lat);
-  const dLng = toRad(to.lng - from.lng);
-
-  const y = Math.sin(dLng) * Math.cos(lat2);
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) -
-    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-
-  return (toDeg(Math.atan2(y, x)) + 360) % 360;
-}
-
-function angleDiffDeg(a: number, b: number): number {
-  const diff = Math.abs(a - b) % 360;
-  return diff > 180 ? 360 - diff : diff;
 }
 
 export function findCorridorIcCandidates(

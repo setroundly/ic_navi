@@ -19,6 +19,13 @@ export type DrivingRoute = {
   geometry: LatLng[];
 };
 
+export type RouteSample = {
+  point: LatLng;
+  cumulativeDistanceM: number;
+  bearing: number;
+  isHighway: boolean;
+};
+
 export type HighwayTransition = {
   location: LatLng;
   highwayRefs: string[];
@@ -340,6 +347,121 @@ export function sliceGeometryNearPoint(
   }
 
   return result;
+}
+
+export function bearingDeg(from: LatLng, to: LatLng): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const toDeg = (rad: number) => (rad * 180) / Math.PI;
+  const lat1 = toRad(from.lat);
+  const lat2 = toRad(to.lat);
+  const dLng = toRad(to.lng - from.lng);
+
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+export function angleDiffDeg(a: number, b: number): number {
+  const diff = Math.abs(a - b) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+function interpolatePoint(start: LatLng, end: LatLng, t: number): LatLng {
+  return {
+    lat: start.lat + (end.lat - start.lat) * t,
+    lng: start.lng + (end.lng - start.lng) * t,
+  };
+}
+
+function isHighwayAtDistance(
+  distanceM: number,
+  stepBoundaries: Array<{ endM: number; isHighway: boolean }>,
+): boolean {
+  for (const boundary of stepBoundaries) {
+    if (distanceM <= boundary.endM) {
+      return boundary.isHighway;
+    }
+  }
+
+  return stepBoundaries[stepBoundaries.length - 1]?.isHighway ?? false;
+}
+
+export function sampleRouteEvery(
+  geometry: LatLng[],
+  steps: RouteStep[],
+  intervalM = 500,
+): RouteSample[] {
+  if (geometry.length === 0) return [];
+
+  const stepBoundaries: Array<{ endM: number; isHighway: boolean }> = [];
+  let cumulativeStepM = 0;
+  for (const step of steps) {
+    cumulativeStepM += step.distanceM;
+    stepBoundaries.push({ endM: cumulativeStepM, isHighway: step.isHighway });
+  }
+
+  if (geometry.length === 1) {
+    return [
+      {
+        point: geometry[0],
+        cumulativeDistanceM: 0,
+        bearing: 0,
+        isHighway: isHighwayAtDistance(0, stepBoundaries),
+      },
+    ];
+  }
+
+  const samples: RouteSample[] = [];
+  let segmentStart = geometry[0];
+  let cumulativeM = 0;
+  let nextSampleAtM = 0;
+
+  const pushSample = (point: LatLng, distanceM: number, bearing: number) => {
+    samples.push({
+      point,
+      cumulativeDistanceM: distanceM,
+      bearing,
+      isHighway: isHighwayAtDistance(distanceM, stepBoundaries),
+    });
+  };
+
+  pushSample(geometry[0], 0, bearingDeg(geometry[0], geometry[1]));
+  nextSampleAtM = intervalM;
+
+  for (let i = 1; i < geometry.length; i++) {
+    const segmentEnd = geometry[i];
+    const segmentLengthM = haversineM(segmentStart, segmentEnd);
+    const segmentBearing = bearingDeg(segmentStart, segmentEnd);
+
+    while (cumulativeM + segmentLengthM >= nextSampleAtM) {
+      const distanceIntoSegmentM = nextSampleAtM - cumulativeM;
+      const t =
+        segmentLengthM > 0 ? distanceIntoSegmentM / segmentLengthM : 0;
+      pushSample(
+        interpolatePoint(segmentStart, segmentEnd, t),
+        nextSampleAtM,
+        segmentBearing,
+      );
+      nextSampleAtM += intervalM;
+    }
+
+    cumulativeM += segmentLengthM;
+    segmentStart = segmentEnd;
+  }
+
+  const lastPoint = geometry[geometry.length - 1];
+  const previousPoint = geometry[geometry.length - 2] ?? geometry[0];
+  if (
+    samples.length === 0 ||
+    haversineM(samples[samples.length - 1].point, lastPoint) > 100
+  ) {
+    pushSample(lastPoint, cumulativeM, bearingDeg(previousPoint, lastPoint));
+  }
+
+  return samples;
 }
 
 export function haversineM(a: LatLng, b: LatLng): number {
