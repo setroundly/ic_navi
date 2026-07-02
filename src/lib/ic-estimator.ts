@@ -1,16 +1,18 @@
 import { geocodeAddress } from "@/lib/geocode";
 import {
   findCorridorIcCandidates,
-  findIcCandidatesForTransition,
+  findEntryExitIcsByRouteSampling,
 } from "@/lib/ic-matcher";
 import {
+  bearingDeg,
   estimateHighwayAndLocalDistance,
   fetchDrivingRoute,
-  findHighwayTransitions,
   haversineM,
-  sliceGeometryNearPoint,
+  sampleRouteEvery,
 } from "@/lib/route";
 import type { RouteSearchResult } from "@/types/route";
+
+const ROUTE_SAMPLE_INTERVAL_M = 500;
 
 function roundKm(meters: number): number {
   return Math.round((meters / 1000) * 10) / 10;
@@ -52,7 +54,7 @@ function buildCorridorFallbackResult(
     highwayDistanceKm: null,
     localDistanceKm: roundKm(routeDistanceM),
     estimationNote:
-      "ルート上に高速区間が見つからなかったため、進行方向の近傍ICで推定しました。",
+      "ルート上にIC交差が見つからなかったため、進行方向の近傍ICで推定しました。",
   };
 }
 
@@ -66,12 +68,19 @@ export async function searchRouteIcs(
   ]);
 
   const route = await fetchDrivingRoute(origin, destination);
-  const { entry, exit } = findHighwayTransitions(route.steps);
   const { highwayDistanceM, localDistanceM } =
     estimateHighwayAndLocalDistance(route.steps);
+  const travelBearing = bearingDeg(origin, destination);
+  const samples = sampleRouteEvery(
+    route.geometry,
+    route.steps,
+    ROUTE_SAMPLE_INTERVAL_M,
+  );
+  const { entry, exit, entryCandidates, exitCandidates } =
+    findEntryExitIcsByRouteSampling(samples, travelBearing);
 
-  if (!entry || highwayDistanceM < 500) {
-    if (haversineM(origin, destination) < 15_000) {
+  if (!entry || !exit) {
+    if (highwayDistanceM < 500 && haversineM(origin, destination) < 15_000) {
       throw new Error(
         "高速道路の乗り口が見つかりませんでした。ルートが一般道のみの可能性があります。",
       );
@@ -80,42 +89,16 @@ export async function searchRouteIcs(
     return buildCorridorFallbackResult(origin, destination, route.distanceM);
   }
 
-  if (!exit) {
-    throw new Error("高速道路の降り口が見つかりませんでした。");
-  }
-
-  const entryGeometry = sliceGeometryNearPoint(
-    route.geometry,
-    entry.location,
-    4_000,
-  );
-  const exitGeometry = sliceGeometryNearPoint(
-    route.geometry,
-    exit.location,
-    4_000,
-  );
-
-  const entryCandidates = findIcCandidatesForTransition(entry, entryGeometry);
-  const exitCandidates = findIcCandidatesForTransition(exit, exitGeometry);
-
-  if (entryCandidates.length === 0 || exitCandidates.length === 0) {
-    if (haversineM(origin, destination) >= 15_000) {
-      return buildCorridorFallbackResult(origin, destination, route.distanceM);
-    }
-
-    throw new Error("最寄りのICが見つかりませんでした。");
-  }
-
   return {
     origin,
     destination,
-    entryIc: entryCandidates[0],
-    exitIc: exitCandidates[0],
+    entryIc: entry,
+    exitIc: exit,
     entryCandidates,
     exitCandidates,
     distanceKm: roundKm(route.distanceM),
     durationMin: roundMin(route.durationSec),
-    highwayDistanceKm: roundKm(highwayDistanceM),
+    highwayDistanceKm: highwayDistanceM > 0 ? roundKm(highwayDistanceM) : null,
     localDistanceKm: roundKm(localDistanceM),
   };
 }
